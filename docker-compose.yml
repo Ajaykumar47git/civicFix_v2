@@ -1,0 +1,148 @@
+version: '3.8'
+
+# ==============================================================================
+# CivicFix Municipal Platform — Production Docker Compose Orchestration
+# Microservices: PostgreSQL 16 PostGIS, Redis 7, Express API, Nginx Frontend
+# ==============================================================================
+
+services:
+  # ----------------------------------------------------------------------------
+  # Database Tier: PostgreSQL 16 with PostGIS Spatial Extension
+  # ----------------------------------------------------------------------------
+  db:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: civicfix_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-civicfix}
+      POSTGRES_USER: ${DB_USER:-civicfix_admin}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-civicfix_secure_pass_2026}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - civicfix_pgdata:/var/lib/postgresql/data
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    networks:
+      - civicfix_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-civicfix_admin} -d ${DB_NAME:-civicfix}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2048M
+        reservations:
+          memory: 512M
+
+  # ----------------------------------------------------------------------------
+  # Caching & Rate Limiting Tier: Redis 7
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: civicfix_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-redis_secure_pass_2026}"]
+    volumes:
+      - civicfix_redisdata:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    networks:
+      - civicfix_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secure_pass_2026}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ----------------------------------------------------------------------------
+  # Backend API Tier: Node.js 20 Express Service
+  # ----------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: civicfix_backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://${DB_USER:-civicfix_admin}:${DB_PASSWORD:-civicfix_secure_pass_2026}@db:5432/${DB_NAME:-civicfix}?schema=public
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secure_pass_2026}@redis:6379
+      JWT_SECRET: ${JWT_SECRET:-civicfix_jwt_super_secret_signing_key_32chars_min}
+      JWT_EXPIRATION: ${JWT_EXPIRATION:-900s}
+      REFRESH_TOKEN_SECRET: ${REFRESH_TOKEN_SECRET:-civicfix_refresh_token_secret_key_32chars}
+      REFRESH_TOKEN_EXPIRATION: ${REFRESH_TOKEN_EXPIRATION:-7d}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost}
+      APP_URL: ${APP_URL:-http://localhost}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    ports:
+      - "${BACKEND_PORT:-3000}:3000"
+    networks:
+      - civicfix_network
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1024M
+        reservations:
+          memory: 256M
+
+  # ----------------------------------------------------------------------------
+  # Frontend Web Tier: Nginx Alpine Reverse Proxy & React SPA
+  # ----------------------------------------------------------------------------
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: civicfix_frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    networks:
+      - civicfix_network
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          memory: 128M
+
+# ------------------------------------------------------------------------------
+# Storage Volumes & Networks
+# ------------------------------------------------------------------------------
+volumes:
+  civicfix_pgdata:
+    name: civicfix_pgdata
+  civicfix_redisdata:
+    name: civicfix_redisdata
+
+networks:
+  civicfix_network:
+    name: civicfix_network
+    driver: bridge

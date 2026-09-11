@@ -1,0 +1,75 @@
+version: '3.8'
+
+# ==============================================================================
+# CivicFix Municipal Platform — Development Docker Compose Orchestration
+# Hot-reloading with tsx, Vite HMR, and direct source bind-mounting
+# ==============================================================================
+
+services:
+  # Database Tier for Development
+  db:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: civicfix_dev_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: civicfix_dev
+      POSTGRES_USER: civicfix_dev
+      POSTGRES_PASSWORD: dev_password_123
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - civicfix_dev_pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - civicfix_dev_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U civicfix_dev -d civicfix_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Redis for Development
+  redis:
+    image: redis:7-alpine
+    container_name: civicfix_dev_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    networks:
+      - civicfix_dev_network
+
+  # Full-Stack App in Dev Mode (Hot Reload with tsx and Vite)
+  app:
+    image: node:20-alpine
+    container_name: civicfix_dev_app
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_URL: postgresql://civicfix_dev:dev_password_123@db:5432/civicfix_dev?schema=public
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: dev_jwt_secret_key_at_least_32_characters_long_for_dev
+      JWT_EXPIRATION: 3600s
+      REFRESH_TOKEN_SECRET: dev_refresh_token_secret_key_32_characters
+      REFRESH_TOKEN_EXPIRATION: 30d
+      CORS_ORIGIN: http://localhost:3000
+      APP_URL: http://localhost:3000
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    networks:
+      - civicfix_dev_network
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  civicfix_dev_pgdata:
+
+networks:
+  civicfix_dev_network:
+    driver: bridge

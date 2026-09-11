@@ -1,0 +1,70 @@
+# ==============================================================================
+# CivicFix Municipal Platform — Backend Dockerfile
+# Multi-stage production build for Node.js 20 Express Backend Service
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Stage 1: Build & Compilation
+# ------------------------------------------------------------------------------
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Install build dependencies required for native modules if any
+RUN apk add --no-cache python3 make g++
+
+# Copy package manifests first for optimal layer caching
+COPY package.json package-lock.json* bun.lock* ./
+
+# Install all dependencies (including devDependencies for esbuild & typescript)
+RUN npm ci --prefer-offline --no-audit
+
+# Copy source code and configuration files
+COPY tsconfig.json vite.config.ts ./
+COPY server.ts ./
+COPY src/ ./src/
+COPY index.html ./
+
+# Build both backend bundle (dist/server.cjs via esbuild) and frontend assets
+RUN npm run build
+
+# ------------------------------------------------------------------------------
+# Stage 2: Production Runtime
+# ------------------------------------------------------------------------------
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+# Set node environment
+ENV NODE_ENV=production
+ENV PORT=3000
+
+# Install dumb-init to handle PID 1 signals and graceful shutdown
+RUN apk add --no-cache dumb-init curl
+
+# Create non-root system user and group for security hardening
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 civicfix -G nodejs
+
+# Copy package manifests to install production-only dependencies
+COPY package.json package-lock.json* bun.lock* ./
+
+RUN npm ci --only=production --prefer-offline --no-audit && \
+    npm cache clean --force
+
+# Copy compiled backend bundle and static distribution from builder stage
+COPY --from=builder --chown=civicfix:nodejs /app/dist ./dist
+
+# Switch to non-root user
+USER civicfix
+
+# Expose standard application port
+EXPOSE 3000
+
+# Container Healthcheck
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:3000/api/health || exit 1
+
+# Launch production server with signal supervisor
+ENTRYPOINT ["/usr/bin/dumb-init", "--"]
+CMD ["node", "dist/server.cjs"]
